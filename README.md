@@ -17,9 +17,10 @@ Sui-Lite exists to:
 
 1. **Reproduce** `system_shizuku` behavior via Magisk overlay
 2. **Build** the APK from upstream sources (deterministic, auditable)
-3. **Observe** SELinux domain transitions, file contexts, and AVC denials
-4. **Verify** that runtime state matches upstream policy expectations
-5. **Release** automatically via GitHub Actions with full audit artifacts
+3. **Register** a custom Binder service via `app_process` for verification
+4. **Observe** SELinux domain transitions, file contexts, and AVC denials
+5. **Verify** that runtime state matches upstream policy expectations
+6. **Release** automatically via GitHub Actions with full audit artifacts
 
 This module does **NOT**:
 
@@ -49,7 +50,7 @@ No upstream file is renamed, merged, split, or modified.
 ```
 Sui-Lite/
 ├── module.prop                  # Magisk module metadata
-├── service.sh                   # Magisk service phase (observation only)
+├── service.sh                   # Magisk service phase (Binder launch & observation)
 ├── post-fs-data.sh              # Magisk post-fs-data phase (overlay verification)
 ├── README.md                    # This file
 ├── .gitmodules                  # Submodule definition
@@ -71,6 +72,11 @@ Sui-Lite/
 │       ├── etc/permissions/         # Permission XMLs (from upstream)
 │       └── etc/init/                # init.rc (from upstream)
 │
+├── binder-service/              # Custom Binder service registration
+│   ├── src/                     # Java sources (no dependencies)
+│   ├── build.sh                 # DEX JAR compiler script
+│   └── README.md                # Binder-specific documentation
+│
 ├── build/                       # APK build pipeline
 │   ├── build_apks.sh            # Deterministic APK build script
 │   ├── env_check.sh             # Build environment validator
@@ -81,12 +87,14 @@ Sui-Lite/
 │   ├── scripts/                 # Capture & verification scripts
 │   │   ├── capture_contexts.sh
 │   │   ├── capture_denials.sh
-│   │   └── verify_domains.sh
+│   │   ├── verify_domains.sh
+│   │   └── capture_binder_contexts.sh
 │   ├── selinux/                 # Example audit output
 │   │   ├── contexts.before.txt
 │   │   ├── contexts.after.txt
 │   │   ├── denials.log
-│   │   └── domain.map
+│   │   ├── domain.map
+│   │   └── binder_contexts.txt
 │   └── upstream/                # Upstream diff reports (CI-generated)
 │
 └── .github/workflows/           # CI/CD automation

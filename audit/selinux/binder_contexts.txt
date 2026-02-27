@@ -1,0 +1,50 @@
+# Sui-Lite Binder Context Capture
+# Generated: 2026-02-27 23:00:00
+# Service name: sui_lite_binder
+#
+# This is an EXAMPLE of expected output.
+# Actual output is generated on-device by capture_binder_contexts.sh.
+
+=== Binder Registration ===
+NOT REGISTERED: sui_lite_binder
+  (Expected under SELinux Enforcing without custom policy)
+
+=== Upstream Binder Services ===
+NOT REGISTERED: shizuku
+NOT REGISTERED: system_shizuku
+NOT REGISTERED: shizuku_mgr
+
+=== Service Process ===
+PID: 4821
+UID: 0
+GID: 0
+SELinux context: u:r:magisk:s0
+Command: com.suilite.binder.BinderEntryPoint
+Executable: /system/bin/app_process64
+
+=== Binder-Related AVC Denials ===
+# Expected denials when running under Magisk without custom SELinux policy:
+#
+# type=1400 audit(...): avc: denied { add } for service=sui_lite_binder
+#   pid=4821 scontext=u:r:magisk:s0 tcontext=u:object_r:default_android_service:s0
+#   tclass=service_manager permissive=0
+#
+# This denial occurs because:
+#   1. The process runs in the 'magisk' SELinux domain
+#   2. The 'magisk' domain does not have 'add' permission on service_manager
+#   3. This is EXPECTED behavior under Enforcing mode
+#
+# To resolve (device-level policy, NOT in this module):
+#   allow magisk default_android_service:service_manager { add find };
+
+(no sui_lite-specific Binder denials found in dmesg)
+
+=== ServiceManager Add Denials ===
+(no ServiceManager add denials found)
+
+=== JAR File Context ===
+PATH: /data/adb/modules/sui-lite/binder-service/binder-service.jar
+  context: u:object_r:magisk_file:s0
+  sha256: a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2
+
+# End of Binder context capture
