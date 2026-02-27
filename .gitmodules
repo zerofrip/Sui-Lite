@@ -1,0 +1,3 @@
+[submodule "upstream/system_shizuku"]
+	path = upstream/system_shizuku
+	url = https://github.com/zerofrip/system_shizuku.git
