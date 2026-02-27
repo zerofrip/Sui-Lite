@@ -1,0 +1,184 @@
+# upstream-sync.yml — Sui-Lite CI/CD
+#
+# Detects and applies upstream changes from system_shizuku.
+# The upstream is tracked as a git submodule at upstream/system_shizuku.
+#
+# Trigger: manual dispatch or weekly schedule.
+# Effect:  Updates submodule ref, generates diff, commits if changed.
+
+name: Upstream Sync
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_update:
+        description: 'Force submodule update even if already current'
+        required: false
+        default: 'false'
+        type: boolean
+
+  schedule:
+    # Weekly check — every Monday at 06:00 UTC
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: write
+
+jobs:
+  sync-upstream:
+    runs-on: ubuntu-latest
+    outputs:
+      upstream_changed: ${{ steps.check.outputs.changed }}
+      upstream_old_sha: ${{ steps.check.outputs.old_sha }}
+      upstream_new_sha: ${{ steps.check.outputs.new_sha }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+          # Submodule at: upstream/system_shizuku
+
+      - name: Record current upstream commit
+        id: before
+        run: |
+          OLD_SHA=$(git -C upstream/system_shizuku rev-parse HEAD)
+          echo "old_sha=$OLD_SHA" >> "$GITHUB_OUTPUT"
+          echo "Current upstream commit: $OLD_SHA"
+
+      - name: Update upstream submodule
+        run: |
+          git submodule update --remote --merge upstream/system_shizuku
+          git -C upstream/system_shizuku submodule update --init --recursive
+
+      - name: Check for changes
+        id: check
+        run: |
+          OLD_SHA="${{ steps.before.outputs.old_sha }}"
+          NEW_SHA=$(git -C upstream/system_shizuku rev-parse HEAD)
+
+          echo "old_sha=$OLD_SHA" >> "$GITHUB_OUTPUT"
+          echo "new_sha=$NEW_SHA" >> "$GITHUB_OUTPUT"
+
+          if [ "$OLD_SHA" = "$NEW_SHA" ] && [ "${{ inputs.force_update }}" != "true" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No upstream changes detected."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Upstream changed: $OLD_SHA → $NEW_SHA"
+          fi
+
+      - name: Generate upstream diff
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          OLD_SHA="${{ steps.check.outputs.old_sha }}"
+          NEW_SHA="${{ steps.check.outputs.new_sha }}"
+
+          mkdir -p audit/upstream
+
+          {
+            echo "# Upstream Diff Report"
+            echo "# Generated: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo "# Old commit: $OLD_SHA"
+            echo "# New commit: $NEW_SHA"
+            echo "#"
+            echo ""
+            echo "## Commit log"
+            echo ""
+            git -C upstream/system_shizuku log --oneline "$OLD_SHA..$NEW_SHA" 2>/dev/null || \
+              echo "(initial sync — no previous commit)"
+            echo ""
+            echo "## File changes"
+            echo ""
+            git -C upstream/system_shizuku diff --stat "$OLD_SHA..$NEW_SHA" 2>/dev/null || \
+              echo "(initial sync — full tree)"
+            echo ""
+            echo "## Full diff"
+            echo ""
+            git -C upstream/system_shizuku diff "$OLD_SHA..$NEW_SHA" 2>/dev/null || \
+              echo "(initial sync — no diff available)"
+          } > audit/upstream/upstream_diff.txt
+
+          echo "Diff generated: audit/upstream/upstream_diff.txt"
+          cat audit/upstream/upstream_diff.txt
+
+      - name: Update overlay files from upstream
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          echo "Syncing overlay files from updated upstream..."
+
+          # Permission XMLs
+          cp upstream/system_shizuku/permissions/com.android.systemshizuku.xml \
+             overlay/system/etc/permissions/
+          cp upstream/system_shizuku/permissions/privapp-permissions-systemshizuku.xml \
+             overlay/system/etc/permissions/
+
+          # init.rc
+          cp upstream/system_shizuku/init.system_shizuku.rc \
+             overlay/system/etc/init/
+
+          echo "Overlay files synced."
+
+          # Verify fidelity
+          for pair in \
+            "upstream/system_shizuku/permissions/com.android.systemshizuku.xml:overlay/system/etc/permissions/com.android.systemshizuku.xml" \
+            "upstream/system_shizuku/permissions/privapp-permissions-systemshizuku.xml:overlay/system/etc/permissions/privapp-permissions-systemshizuku.xml" \
+            "upstream/system_shizuku/init.system_shizuku.rc:overlay/system/etc/init/init.system_shizuku.rc"
+          do
+            src="${pair%%:*}"
+            dst="${pair##*:}"
+            if diff -q "$src" "$dst" >/dev/null 2>&1; then
+              echo "  ✓ $dst matches upstream"
+            else
+              echo "  ✗ MISMATCH: $dst"
+              exit 1
+            fi
+          done
+
+      - name: Commit changes
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          OLD_SHA="${{ steps.check.outputs.old_sha }}"
+          NEW_SHA="${{ steps.check.outputs.new_sha }}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add upstream/
+          git add overlay/
+          git add audit/upstream/ || true
+
+          git commit -m "chore: sync upstream ${OLD_SHA:0:7}..${NEW_SHA:0:7}" \
+            -m "Upstream repository: https://github.com/zerofrip/system_shizuku" \
+            -m "Old commit: $OLD_SHA" \
+            -m "New commit: $NEW_SHA" \
+            -m "Automated by upstream-sync workflow."
+
+          git push
+
+      - name: Upload diff artifact
+        if: steps.check.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-diff
+          path: audit/upstream/upstream_diff.txt
+          retention-days: 90
+
+      - name: Summary
+        run: |
+          echo "## Upstream Sync Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.check.outputs.changed }}" = "true" ]; then
+            echo "✅ **Upstream updated**" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "| | |" >> "$GITHUB_STEP_SUMMARY"
+            echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+            echo "| Old commit | \`${{ steps.check.outputs.old_sha }}\` |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| New commit | \`${{ steps.check.outputs.new_sha }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "ℹ️ **No upstream changes detected.**" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Current: \`${{ steps.check.outputs.old_sha }}\`" >> "$GITHUB_STEP_SUMMARY"
+          fi

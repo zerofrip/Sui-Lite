@@ -1,0 +1,72 @@
+# Sui-Lite Domain & Context Verification
+# Timestamp: 2026-02-27 21:47:00 +0900
+# SELinux mode: Enforcing
+#
+# Verifies runtime state against upstream SELinux policy expectations
+# Source: upstream/system_shizuku/sepolicy/
+# ──────────────────────────────────────────────────────────
+
+## Process Domain Checks
+
+# Expected: system_shizuku service runs in domain u:r:system_shizuku:s0
+# Source: init.system_shizuku.rc line: seclabel u:r:system_shizuku:s0
+
+  FAIL  shizuku process domain (PID=1234)
+        actual:   u:r:init:s0
+        expected: system_shizuku
+
+## File Context Checks
+
+# Expected contexts from upstream sepolicy/file_contexts:
+#   /system/priv-app/SystemShizuku(/.*)?  u:object_r:system_file:s0
+#   /system/bin/system_shizuku            u:object_r:system_shizuku_exec:s0
+#   /data/system/system_shizuku(/.*)?     u:object_r:system_shizuku_data_file:s0
+
+  PASS  /system/priv-app/SystemShizuku
+        actual:   u:object_r:system_file:s0
+        expected: system_file
+
+  SKIP  /data/system/system_shizuku
+        (path does not exist — service may not have run yet)
+
+## Service Context Checks
+
+# Expected from upstream sepolicy/service_contexts:
+#   shizuku            u:object_r:system_shizuku_service:s0
+#   system_shizuku     u:object_r:system_shizuku_service:s0
+#   shizuku_mgr        u:object_r:system_shizuku_mgr_service:s0
+
+  FAIL  Binder service 'shizuku' is NOT registered
+  FAIL  Binder service 'system_shizuku' is NOT registered
+  FAIL  Binder service 'shizuku_mgr' is NOT registered
+
+## Permission XML Overlay Checks
+
+  PASS  /system/etc/permissions/com.android.systemshizuku.xml
+        actual:   u:object_r:system_file:s0
+        expected: system_file
+
+  PASS  /system/etc/permissions/privapp-permissions-systemshizuku.xml
+        actual:   u:object_r:system_file:s0
+        expected: system_file
+
+## init.rc Overlay Check
+
+  PASS  /system/etc/init/init.system_shizuku.rc
+        actual:   u:object_r:system_file:s0
+        expected: system_file
+
+# ──────────────────────────────────────────────────────────
+# SUMMARY
+#   PASS: 4
+#   FAIL: 4
+#   SKIP: 1
+# ──────────────────────────────────────────────────────────
+#
+# FAILs indicate domain/context mismatches that may require
+# SELinux policy adjustments OUTSIDE this module.
+#
+# SKIPs indicate components that are not yet active or
+# not yet installed.
+# ──────────────────────────────────────────────────────────
+# End of domain verification

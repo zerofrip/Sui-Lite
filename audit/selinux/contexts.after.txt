@@ -1,0 +1,46 @@
+# Sui-Lite SELinux Context Capture
+# Phase: after
+# Timestamp: 2026-02-27 21:46:30 +0900
+# SELinux mode: Enforcing
+#
+# Format: <context>  <path>
+# ──────────────────────────────────────────────────────────
+
+## Overlay paths (expected by system_shizuku)
+
+u:object_r:system_file:s0  /system/priv-app/SystemShizuku
+u:object_r:system_file:s0  /system/priv-app/SystemShizuku/SystemShizuku.apk
+u:object_r:system_file:s0  /system/etc/permissions/com.android.systemshizuku.xml
+u:object_r:system_file:s0  /system/etc/permissions/privapp-permissions-systemshizuku.xml
+u:object_r:system_file:s0  /system/etc/init/init.system_shizuku.rc
+
+## Data paths (runtime state)
+
+u:object_r:system_data_file:s0  /data/system/system_shizuku
+<not_found>  /data/system/system_shizuku/grants_u0.json
+<not_found>  /data/system/system_shizuku/audit_u0.json
+
+## Reference system paths (for context comparison)
+
+u:object_r:zygote_exec:s0  /system/bin/app_process
+u:object_r:zygote_exec:s0  /system/bin/app_process64
+u:object_r:shell_exec:s0  /system/bin/sh
+u:object_r:system_file:s0  /system/priv-app
+u:object_r:system_file:s0  /system/etc/permissions
+u:object_r:system_file:s0  /system/etc/init
+
+## Process contexts (running services)
+
+u:r:init:s0  pid=1234 (shizuku)
+<not_running>  com.android.systemshizuku
+
+# ──────────────────────────────────────────────────────────
+# NOTE: The shizuku process is in domain u:r:init:s0 instead of
+# the expected u:r:system_shizuku:s0. This indicates that the
+# system_shizuku SELinux type is NOT defined in the device policy.
+# The init.rc seclabel transition did not occur.
+#
+# Action required: Define system_shizuku type in device SELinux policy
+# or load a Magisk sepolicy.rule with the necessary type definitions.
+# ──────────────────────────────────────────────────────────
+# End of capture: after

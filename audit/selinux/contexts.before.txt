@@ -1,0 +1,38 @@
+# Sui-Lite SELinux Context Capture
+# Phase: before
+# Timestamp: 2026-02-27 21:45:00 +0900
+# SELinux mode: Enforcing
+#
+# Format: <context>  <path>
+# ──────────────────────────────────────────────────────────
+
+## Overlay paths (expected by system_shizuku)
+
+<not_found>  /system/priv-app/SystemShizuku
+<not_found>  /system/priv-app/SystemShizuku/SystemShizuku.apk
+<not_found>  /system/etc/permissions/com.android.systemshizuku.xml
+<not_found>  /system/etc/permissions/privapp-permissions-systemshizuku.xml
+<not_found>  /system/etc/init/init.system_shizuku.rc
+
+## Data paths (runtime state)
+
+<not_found>  /data/system/system_shizuku
+<not_found>  /data/system/system_shizuku/grants_u0.json
+<not_found>  /data/system/system_shizuku/audit_u0.json
+
+## Reference system paths (for context comparison)
+
+u:object_r:zygote_exec:s0  /system/bin/app_process
+u:object_r:zygote_exec:s0  /system/bin/app_process64
+u:object_r:shell_exec:s0  /system/bin/sh
+u:object_r:system_file:s0  /system/priv-app
+u:object_r:system_file:s0  /system/etc/permissions
+u:object_r:system_file:s0  /system/etc/init
+
+## Process contexts (running services)
+
+<not_running>  shizuku
+<not_running>  com.android.systemshizuku
+
+# ──────────────────────────────────────────────────────────
+# End of capture: before

@@ -1,0 +1,48 @@
+# Sui-Lite AVC Denial Capture
+# Timestamp: 2026-02-27 21:46:45 +0900
+# SELinux mode: Enforcing
+#
+# Source: dmesg + logcat audit
+# Filter: system_shizuku, shizuku, SystemShizuku
+# ──────────────────────────────────────────────────────────
+
+## dmesg AVC denials (system_shizuku related)
+
+# Example denials that would appear if the system_shizuku domain is
+# defined but policy rules are incomplete:
+#
+# avc: denied { add } for service=shizuku pid=1234 uid=1000
+#   scontext=u:r:system_shizuku:s0 tcontext=u:object_r:default_android_service:s0
+#   tclass=service_manager permissive=0
+#
+# avc: denied { find } for service=shizuku pid=5678 uid=10042
+#   scontext=u:r:untrusted_app:s0:c42,c256,c512,c768
+#   tcontext=u:object_r:default_android_service:s0
+#   tclass=service_manager permissive=0
+#
+# These denials indicate that:
+#   1. The system_shizuku_service type is not in the device policy
+#   2. The service falls back to default_android_service label
+#   3. Neither system_shizuku nor client apps can find/add the service
+
+(no system_shizuku-related AVC denials found in dmesg)
+
+## dmesg AVC denials (all, last 50)
+
+(no AVC denials found in dmesg)
+
+## logcat audit denials (system_shizuku related)
+
+(no system_shizuku-related entries in logcat audit buffer)
+
+## Kernel audit log (/proc/kmsg snapshot)
+
+(/data/misc/audit/audit.log not available)
+
+# ──────────────────────────────────────────────────────────
+# To capture live denials, run on the device:
+#   dmesg -w | grep -i 'avc.*denied'
+#   or:
+#   logcat -b all | grep -i 'avc.*denied'
+# ──────────────────────────────────────────────────────────
+# End of denial capture

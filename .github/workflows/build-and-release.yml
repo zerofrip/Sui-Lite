@@ -1,0 +1,538 @@
+# build-and-release.yml — Sui-Lite CI/CD
+#
+# Builds APKs from upstream, assembles the Magisk module ZIP,
+# and creates a GitHub Release with full audit artifacts.
+#
+# Release body = verbatim upstream commit message.
+# Tag format   = sui-lite-<upstream_commit_hash>
+#
+# Trigger: push to main, or manual dispatch.
+# Effect:  APK build -> module assembly -> release creation.
+
+name: Build and Release
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'upstream/**'
+      - 'overlay/**'
+      - 'build/**'
+      - 'module.prop'
+      - 'service.sh'
+      - 'post-fs-data.sh'
+
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: 'Force APK rebuild regardless of change detection'
+        required: false
+        default: 'false'
+        type: boolean
+      create_release:
+        description: 'Create a GitHub Release'
+        required: false
+        default: 'true'
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  MODULE_ID: sui-lite
+  APK_NAME: SystemShizuku
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────
+  # 1. Detect whether APK rebuild is needed + extract upstream info
+  # ──────────────────────────────────────────────────────────────────
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      needs_rebuild: ${{ steps.decide.outputs.needs_rebuild }}
+      upstream_sha: ${{ steps.info.outputs.upstream_sha }}
+      upstream_sha_short: ${{ steps.info.outputs.upstream_sha_short }}
+      upstream_commit_msg: ${{ steps.info.outputs.upstream_commit_msg }}
+      version_code: ${{ steps.version.outputs.version_code }}
+      version_name: ${{ steps.version.outputs.version_name }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 2
+
+      - name: Gather upstream info and commit message
+        id: info
+        run: |
+          SHA=$(git -C upstream/system_shizuku rev-parse HEAD)
+          SHA_SHORT=$(git -C upstream/system_shizuku rev-parse --short=7 HEAD)
+          echo "upstream_sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "upstream_sha_short=$SHA_SHORT" >> "$GITHUB_OUTPUT"
+          echo "Upstream commit: $SHA"
+
+          # Extract the full commit message verbatim.
+          # Uses heredoc delimiter to preserve line breaks, indentation,
+          # and all formatting exactly as authored upstream.
+          # This is the GitHub Actions recommended pattern for multiline
+          # output values — the delimiter UPSTREAM_MSG_EOF is unique and
+          # will not appear in any real commit message.
+          COMMIT_MSG=$(git -C upstream/system_shizuku log -1 --pretty=%B)
+          {
+            echo 'upstream_commit_msg<<UPSTREAM_MSG_EOF'
+            echo "$COMMIT_MSG"
+            echo 'UPSTREAM_MSG_EOF'
+          } >> "$GITHUB_OUTPUT"
+          echo "Upstream commit message captured ($(echo "$COMMIT_MSG" | wc -l) lines)"
+
+      - name: Check for APK-relevant changes
+        id: decide
+        run: |
+          # If force rebuild is requested, always rebuild
+          if [ "${{ inputs.force_rebuild }}" = "true" ]; then
+            echo "needs_rebuild=true" >> "$GITHUB_OUTPUT"
+            echo "Force rebuild requested."
+            exit 0
+          fi
+
+          # Check what changed in the last commit
+          CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "INITIAL")
+
+          if [ "$CHANGED" = "INITIAL" ]; then
+            echo "needs_rebuild=true" >> "$GITHUB_OUTPUT"
+            echo "Initial build — rebuild required."
+            exit 0
+          fi
+
+          # Rebuild if upstream source, AIDL, manifest, or build scripts changed
+          if echo "$CHANGED" | grep -qE '^(upstream/|build/)'; then
+            echo "needs_rebuild=true" >> "$GITHUB_OUTPUT"
+            echo "APK-relevant files changed — rebuild required."
+          else
+            echo "needs_rebuild=false" >> "$GITHUB_OUTPUT"
+            echo "No APK-relevant changes — skipping rebuild."
+          fi
+
+      - name: Compute version
+        id: version
+        run: |
+          # Version based on date + upstream short SHA
+          UPSTREAM_SHORT=$(git -C upstream/system_shizuku rev-parse --short=7 HEAD)
+          DATE_CODE=$(date -u '+%Y%m%d')
+          VERSION_CODE="$DATE_CODE"
+          VERSION_NAME="1.0.0-${UPSTREAM_SHORT}"
+
+          echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+          echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+          echo "Version: $VERSION_NAME (code: $VERSION_CODE)"
+
+  # ──────────────────────────────────────────────────────────────────
+  # 2. Build APKs
+  # ──────────────────────────────────────────────────────────────────
+  build-apks:
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.needs_rebuild == 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android build tools
+        run: |
+          sdkmanager "build-tools;34.0.0" "platforms;android-34"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+
+      - name: Extract framework stub from SDK
+        run: |
+          # For CI, we use the public android.jar as a compilation target.
+          # Hidden API calls will compile with warnings but produce a
+          # structurally valid APK for overlay verification.
+          #
+          # For full functional APKs, an AOSP build or device framework.jar
+          # would be needed — but that requires platform signing anyway.
+          ANDROID_JAR=$(find "$ANDROID_HOME/platforms" -name "android.jar" | sort -V | tail -1)
+          cp "$ANDROID_JAR" build/framework-stub.jar
+          echo "Framework stub: $ANDROID_JAR -> build/framework-stub.jar"
+
+      - name: Download Jetpack dependencies
+        run: |
+          mkdir -p build/libs
+          wget -q -O build/libs/security-crypto.jar \
+            "https://repo1.maven.org/maven2/androidx/security/security-crypto/1.1.0-alpha06/security-crypto-1.1.0-alpha06.jar"
+          wget -q -O build/libs/annotation.jar \
+            "https://repo1.maven.org/maven2/androidx/annotation/annotation/1.7.0/annotation-1.7.0.jar"
+          echo "Jetpack dependencies downloaded."
+          ls -la build/libs/
+
+      - name: Build APK
+        id: build
+        run: |
+          chmod +x build/build_apks.sh build/env_check.sh
+          ./build/build_apks.sh --standalone --deploy 2>&1 | tee build/out/build_full.log
+        continue-on-error: true
+
+      - name: Record build result
+        id: result
+        run: |
+          if [ -f "build/out/${{ env.APK_NAME }}.apk" ]; then
+            echo "build_success=true" >> "$GITHUB_OUTPUT"
+            echo "apk_sha256=$(sha256sum build/out/${{ env.APK_NAME }}.apk | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+            echo "apk_size=$(wc -c < build/out/${{ env.APK_NAME }}.apk)" >> "$GITHUB_OUTPUT"
+            echo "APK built successfully."
+          else
+            echo "build_success=false" >> "$GITHUB_OUTPUT"
+            echo "APK build failed. See logs."
+          fi
+
+      - name: Generate rebuilt_apks.json
+        run: |
+          UPSTREAM_SHA="${{ needs.detect-changes.outputs.upstream_sha }}"
+          VERSION_NAME="${{ needs.detect-changes.outputs.version_name }}"
+          BUILD_SUCCESS="${{ steps.result.outputs.build_success }}"
+          APK_SHA=$(sha256sum "build/out/${{ env.APK_NAME }}.apk" 2>/dev/null | awk '{print $1}' || echo 'N/A')
+          APK_SIZE=$(wc -c < "build/out/${{ env.APK_NAME }}.apk" 2>/dev/null || echo 0)
+
+          cat > build/out/rebuilt_apks.json << EOF
+          {
+            "build_timestamp": "$(date -u '+%Y-%m-%dT%H:%M:%SZ')",
+            "build_id": "$(date -u '+%Y%m%d_%H%M%S')",
+            "upstream_commit": "$UPSTREAM_SHA",
+            "version_name": "$VERSION_NAME",
+            "runner": "${{ runner.os }}",
+            "java_version": "$(java -version 2>&1 | head -1)",
+            "apks": [
+              {
+                "name": "${{ env.APK_NAME }}.apk",
+                "package": "com.android.systemshizuku",
+                "signing": "debug",
+                "sha256": "$APK_SHA",
+                "size_bytes": $APK_SIZE,
+                "build_success": ${BUILD_SUCCESS:-false}
+              }
+            ]
+          }
+          EOF
+          echo "rebuilt_apks.json generated."
+          cat build/out/rebuilt_apks.json
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: |
+            build/out/${{ env.APK_NAME }}.apk
+            build/out/build_manifest.txt
+            build/out/rebuilt_apks.json
+            build/out/build_full.log
+          retention-days: 90
+
+  # ──────────────────────────────────────────────────────────────────
+  # 3. Assemble Magisk module ZIP
+  # ──────────────────────────────────────────────────────────────────
+  assemble-module:
+    runs-on: ubuntu-latest
+    needs: [detect-changes, build-apks]
+    if: always() && needs.detect-changes.result == 'success'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Download build artifacts
+        if: needs.build-apks.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: build/out/
+
+      - name: Deploy APK to overlay (if built)
+        if: needs.build-apks.result == 'success'
+        run: |
+          if [ -f "build/out/${{ env.APK_NAME }}.apk" ]; then
+            mkdir -p overlay/system/priv-app/SystemShizuku
+            cp "build/out/${{ env.APK_NAME }}.apk" \
+               overlay/system/priv-app/SystemShizuku/
+            rm -f overlay/system/priv-app/SystemShizuku/.placeholder
+            echo "APK deployed to overlay."
+          fi
+
+      - name: Generate deployment tree
+        run: |
+          {
+            echo "# Sui-Lite Deployment Tree"
+            echo "# Generated: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo "# Upstream: ${{ needs.detect-changes.outputs.upstream_sha }}"
+            echo ""
+            find . -not -path './.git/*' \
+                   -not -path './upstream/.git/*' \
+                   -not -path './upstream/system_shizuku/.git/*' \
+                   -not -path './upstream/system_shizuku/external/Shizuku-API/.git/*' \
+                   -not -name '.git' \
+                   -not -path './build/out/classes/*' \
+                   -not -path './build/out/gen/*' \
+                   -not -path './build/out/res/*' \
+              | sort
+          } > deployment_tree.txt
+          echo "Deployment tree generated."
+
+      - name: Assemble Magisk ZIP
+        id: zip
+        run: |
+          VERSION="${{ needs.detect-changes.outputs.version_name }}"
+          ZIP_NAME="Sui-Lite-${VERSION}.zip"
+
+          # Create a clean staging directory
+          STAGE=$(mktemp -d)
+          echo "Staging directory: $STAGE"
+
+          # Core Magisk files
+          cp module.prop "$STAGE/"
+          cp service.sh "$STAGE/"
+          cp post-fs-data.sh "$STAGE/"
+          cp README.md "$STAGE/"
+
+          # Overlay (system files visible via Magisk magic mount)
+          # Magisk expects system/ at the module root for overlays
+          mkdir -p "$STAGE/system"
+          cp -r overlay/system/* "$STAGE/system/"
+
+          # Audit scripts (for on-device use)
+          cp -r audit "$STAGE/"
+
+          # Build metadata
+          mkdir -p "$STAGE/META-INF"
+          if [ -f build/out/rebuilt_apks.json ]; then
+            cp build/out/rebuilt_apks.json "$STAGE/"
+          fi
+          if [ -f build/out/build_manifest.txt ]; then
+            cp build/out/build_manifest.txt "$STAGE/"
+          fi
+
+          # Create ZIP
+          cd "$STAGE"
+          zip -r "$GITHUB_WORKSPACE/$ZIP_NAME" . \
+            -x '*.git*'
+
+          cd "$GITHUB_WORKSPACE"
+          echo "zip_name=$ZIP_NAME" >> "$GITHUB_OUTPUT"
+          echo "zip_sha256=$(sha256sum "$ZIP_NAME" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "zip_size=$(wc -c < "$ZIP_NAME")" >> "$GITHUB_OUTPUT"
+
+          echo "Module ZIP: $ZIP_NAME"
+          echo "SHA256: $(sha256sum "$ZIP_NAME")"
+          echo "Size: $(wc -c < "$ZIP_NAME") bytes"
+
+          # Cleanup
+          rm -rf "$STAGE"
+
+      - name: Generate APK hash list
+        run: |
+          {
+            echo "# Sui-Lite APK Hash List"
+            echo "# Generated: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo ""
+            if [ -f "overlay/system/priv-app/SystemShizuku/${{ env.APK_NAME }}.apk" ]; then
+              sha256sum "overlay/system/priv-app/SystemShizuku/${{ env.APK_NAME }}.apk"
+            else
+              echo "(no APK deployed — structural module only)"
+            fi
+            echo ""
+            echo "# Module ZIP"
+            sha256sum "${{ steps.zip.outputs.zip_name }}"
+          } > apk_hashes.txt
+          cat apk_hashes.txt
+
+      - name: Upload module artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: magisk-module
+          path: |
+            ${{ steps.zip.outputs.zip_name }}
+            apk_hashes.txt
+            deployment_tree.txt
+          retention-days: 90
+
+    outputs:
+      zip_name: ${{ steps.zip.outputs.zip_name }}
+      zip_sha256: ${{ steps.zip.outputs.zip_sha256 }}
+
+  # ──────────────────────────────────────────────────────────────────
+  # 4. Create GitHub Release
+  #    Release body = verbatim upstream commit message
+  #    Tag format   = sui-lite-<upstream_commit_hash>
+  # ──────────────────────────────────────────────────────────────────
+  release:
+    runs-on: ubuntu-latest
+    needs: [detect-changes, build-apks, assemble-module]
+    if: |
+      always() &&
+      needs.assemble-module.result == 'success' &&
+      (github.event_name == 'workflow_dispatch' && inputs.create_release == 'true' ||
+       github.event_name == 'push')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts/
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release-assets/
+
+          # Magisk module ZIP
+          find release-artifacts/magisk-module -name "*.zip" \
+            -exec cp {} release-assets/ \;
+
+          # Hash and metadata files
+          cp release-artifacts/magisk-module/apk_hashes.txt \
+             release-assets/ 2>/dev/null || true
+          cp release-artifacts/magisk-module/deployment_tree.txt \
+             release-assets/ 2>/dev/null || true
+
+          # Build artifacts
+          cp release-artifacts/build-output/rebuilt_apks.json \
+             release-assets/ 2>/dev/null || true
+          cp release-artifacts/build-output/build_manifest.txt \
+             release-assets/ 2>/dev/null || true
+
+          # Upstream diff (from sync workflow artifact, if available)
+          cp release-artifacts/upstream-diff/upstream_diff.txt \
+             release-assets/ 2>/dev/null || true
+
+          echo "Release assets:"
+          ls -la release-assets/
+
+      - name: Generate release notes from upstream commit
+        id: notes
+        run: |
+          UPSTREAM_SHA="${{ needs.detect-changes.outputs.upstream_sha }}"
+          UPSTREAM_SHA_SHORT="${{ needs.detect-changes.outputs.upstream_sha_short }}"
+          VERSION="${{ needs.detect-changes.outputs.version_name }}"
+          ZIP_NAME="${{ needs.assemble-module.outputs.zip_name }}"
+          ZIP_SHA="${{ needs.assemble-module.outputs.zip_sha256 }}"
+
+          APK_REBUILT="false"
+          if [ "${{ needs.build-apks.result }}" = "success" ]; then
+            APK_REBUILT="true"
+          fi
+
+          # ── Build release body ──────────────────────────────────
+          # The upstream commit message appears FIRST, verbatim.
+          # Module metadata is placed AFTER a clear separator.
+          # This ensures the release is directly traceable to a
+          # single upstream commit with no interpretation.
+
+          # Write the verbatim upstream commit message
+          # The message was captured in detect-changes using the
+          # heredoc delimiter pattern, preserving all formatting.
+          cat > release_notes.md << 'SECTION_HEADER'
+          ## Upstream Commit
+          SECTION_HEADER
+
+          # Write upstream commit hash as a reference line
+          echo "" >> release_notes.md
+          echo "> [\`${UPSTREAM_SHA_SHORT}\`](https://github.com/zerofrip/system_shizuku/commit/${UPSTREAM_SHA})" >> release_notes.md
+          echo "" >> release_notes.md
+
+          # Write verbatim commit message in a quote block to
+          # visually distinguish it from module metadata
+          echo '```' >> release_notes.md
+          cat >> release_notes.md << 'VERBATIM_EOF'
+          ${{ needs.detect-changes.outputs.upstream_commit_msg }}
+          VERBATIM_EOF
+          echo '```' >> release_notes.md
+
+          # ── Separator ──────────────────────────────────────────
+          echo "" >> release_notes.md
+          echo "---" >> release_notes.md
+          echo "" >> release_notes.md
+          echo "> Everything above is the **verbatim upstream commit message**." >> release_notes.md
+          echo "> Everything below is Sui-Lite module build metadata." >> release_notes.md
+          echo "" >> release_notes.md
+
+          # ── Module metadata table ──────────────────────────────
+          echo "### Release Metadata" >> release_notes.md
+          echo "" >> release_notes.md
+          echo "| Property | Value |" >> release_notes.md
+          echo "|----------|-------|" >> release_notes.md
+          echo "| Upstream commit | [\`${UPSTREAM_SHA_SHORT}\`](https://github.com/zerofrip/system_shizuku/commit/${UPSTREAM_SHA}) |" >> release_notes.md
+          echo "| Full SHA | \`${UPSTREAM_SHA}\` |" >> release_notes.md
+          echo "| Version | \`${VERSION}\` |" >> release_notes.md
+          echo "| APK rebuilt | ${APK_REBUILT} |" >> release_notes.md
+          echo "| Module ZIP SHA256 | \`${ZIP_SHA}\` |" >> release_notes.md
+          echo "| Build runner | \`${{ runner.os }}\` |" >> release_notes.md
+          echo "| Build time (UTC) | \`$(date -u '+%Y-%m-%dT%H:%M:%SZ')\` |" >> release_notes.md
+          echo "" >> release_notes.md
+
+          # ── Artifacts table ────────────────────────────────────
+          echo "### Artifacts" >> release_notes.md
+          echo "" >> release_notes.md
+          echo "| File | Description |" >> release_notes.md
+          echo "|------|-------------|" >> release_notes.md
+          echo "| \`*.zip\` | Magisk module (flash this) |" >> release_notes.md
+          echo "| \`apk_hashes.txt\` | SHA256 hashes of all APKs |" >> release_notes.md
+          echo "| \`rebuilt_apks.json\` | Build metadata (JSON) |" >> release_notes.md
+          echo "| \`deployment_tree.txt\` | Full module file tree |" >> release_notes.md
+          echo "| \`upstream_diff.txt\` | Changes from upstream (if synced) |" >> release_notes.md
+          echo "| \`build_manifest.txt\` | Build environment details |" >> release_notes.md
+          echo "" >> release_notes.md
+          echo "> This module is for **debugging and verification only**." >> release_notes.md
+
+          echo "Release notes generated from upstream commit ${UPSTREAM_SHA_SHORT}."
+
+      - name: Create release tag
+        id: tag
+        run: |
+          # Tag format: sui-lite-<full_upstream_commit_hash>
+          # This ensures each release is unambiguously tied to
+          # exactly one upstream commit.
+          UPSTREAM_SHA="${{ needs.detect-changes.outputs.upstream_sha }}"
+          TAG="sui-lite-${UPSTREAM_SHA}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Sui-Lite release for upstream ${UPSTREAM_SHA}" || true
+          git push origin "$TAG" || true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: "Sui-Lite @ upstream/${{ needs.detect-changes.outputs.upstream_sha_short }}"
+          body_path: release_notes.md
+          draft: false
+          prerelease: true
+          files: release-assets/*
+
+      - name: Summary
+        run: |
+          echo "## Release Created" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| | |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Tag | \`${{ steps.tag.outputs.tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Upstream SHA | \`${{ needs.detect-changes.outputs.upstream_sha }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Version | \`${{ needs.detect-changes.outputs.version_name }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Module ZIP | \`${{ needs.assemble-module.outputs.zip_name }}\` |" >> "$GITHUB_STEP_SUMMARY"

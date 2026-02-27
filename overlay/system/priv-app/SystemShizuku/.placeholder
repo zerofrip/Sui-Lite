@@ -1,0 +1,16 @@
+# This directory is the Magisk overlay mount point for SystemShizuku.
+#
+# To make the module functional at runtime, place a pre-built
+# SystemShizuku.apk here:
+#
+#   overlay/system/priv-app/SystemShizuku/SystemShizuku.apk
+#
+# The APK must be compiled from the upstream source:
+#   https://github.com/zerofrip/system_shizuku
+#
+# Build requirements:
+#   - AOSP source tree with Soong build system
+#   - Platform signing key (the APK uses android:sharedUserId="android.uid.system")
+#
+# Without the APK, the overlay structure is verified but the service
+# will not start.

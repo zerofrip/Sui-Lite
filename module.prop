@@ -1,0 +1,6 @@
+id=sui-lite
+name=Sui-Lite (system_shizuku Debug Adaptation)
+version=v1.0.0
+versionCode=1
+author=zerofrip (adapted from system_shizuku)
+description=Verification-oriented Magisk adaptation of system_shizuku. Reproduces upstream behavior and makes SELinux interactions observable. Debug and audit use only — NOT for production.
