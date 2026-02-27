@@ -16,9 +16,10 @@
 Sui-Lite exists to:
 
 1. **Reproduce** `system_shizuku` behavior via Magisk overlay
-2. **Observe** SELinux domain transitions, file contexts, and AVC denials
-3. **Verify** that runtime state matches upstream policy expectations
-4. **Document** discrepancies without silently fixing them
+2. **Build** the APK from upstream sources (deterministic, auditable)
+3. **Observe** SELinux domain transitions, file contexts, and AVC denials
+4. **Verify** that runtime state matches upstream policy expectations
+5. **Release** automatically via GitHub Actions with full audit artifacts
 
 This module does **NOT**:
 
@@ -26,8 +27,6 @@ This module does **NOT**:
 - Set SELinux to permissive
 - Modify upstream code
 - Suppress or hide AVC denials
-
-All SELinux policy decisions are left to the operator.
 
 ---
 
@@ -38,42 +37,25 @@ All SELinux policy decisions are left to the operator.
 | **Upstream repository** | [github.com/zerofrip/system_shizuku](https://github.com/zerofrip/system_shizuku) |
 | **Original author** | zerofrip / The system_shizuku Project |
 | **License** | Apache License 2.0 |
-| **Upstream code location** | `upstream/system_shizuku/` (verbatim, unmodified) |
+| **Upstream code location** | `upstream/system_shizuku/` (git submodule, unmodified) |
 
-All upstream files in `upstream/system_shizuku/` are **byte-for-byte copies**
-of the original repository. No file has been renamed, merged, split, or modified.
-
----
-
-## Required Environment
-
-| Component | Minimum Version |
-|-----------|----------------|
-| **Rooted Android device** | Android 11+ |
-| **Magisk** | v26+ |
-| **Shizuku** | Installed on device |
-| **Sui** | Installed on device |
-| **SELinux** | Enforcing (recommended) |
-
-> [!IMPORTANT]
-> The module is designed to operate under **SELinux Enforcing mode**.
-> AVC denials are expected and intentionally captured for analysis.
-> Do NOT set SELinux to permissive to "fix" functionality — that defeats
-> the purpose of this module.
+The upstream source is tracked as a **git submodule** at `upstream/system_shizuku/`.
+No upstream file is renamed, merged, split, or modified.
 
 ---
 
-## Directory Structure
+## Repository Structure
 
 ```
 Sui-Lite/
-├── module.prop              # Magisk module metadata
-├── service.sh               # Magisk service phase (observation only)
-├── post-fs-data.sh          # Magisk post-fs-data phase (overlay verification)
-├── README.md                # This file
+├── module.prop                  # Magisk module metadata
+├── service.sh                   # Magisk service phase (observation only)
+├── post-fs-data.sh              # Magisk post-fs-data phase (overlay verification)
+├── README.md                    # This file
+├── .gitmodules                  # Submodule definition
 │
-├── upstream/                # Verbatim upstream mirror (immutable)
-│   └── system_shizuku/     # Complete copy of the source repository
+├── upstream/                    # Upstream source (git submodule)
+│   └── system_shizuku/          # https://github.com/zerofrip/system_shizuku
 │       ├── Android.bp
 │       ├── init.system_shizuku.rc
 │       ├── aidl/
@@ -81,70 +63,137 @@ Sui-Lite/
 │       ├── service/
 │       ├── permissions/
 │       ├── settings-integration/
-│       └── ...
+│       └── external/Shizuku-API/    # Nested submodule
 │
-├── overlay/                 # Magisk overlay mount paths
+├── overlay/                     # Magisk overlay mount paths
 │   └── system/
-│       ├── priv-app/SystemShizuku/    # APK goes here
-│       ├── etc/permissions/           # Permission XMLs (verbatim)
-│       └── etc/init/                  # init.rc (verbatim)
+│       ├── priv-app/SystemShizuku/  # APK deployment target
+│       ├── etc/permissions/         # Permission XMLs (from upstream)
+│       └── etc/init/                # init.rc (from upstream)
 │
-└── audit/                   # SELinux observation & verification
-    ├── selinux/             # Captured audit output (runtime)
-    │   ├── contexts.before.txt
-    │   ├── contexts.after.txt
-    │   ├── denials.log
-    │   └── domain.map
-    └── scripts/             # Capture & verification scripts
-        ├── capture_contexts.sh
-        ├── capture_denials.sh
-        └── verify_domains.sh
+├── build/                       # APK build pipeline
+│   ├── build_apks.sh            # Deterministic APK build script
+│   ├── env_check.sh             # Build environment validator
+│   ├── README.build.md          # Build documentation
+│   └── libs/                    # Jetpack dependencies (downloaded)
+│
+├── audit/                       # SELinux observation & verification
+│   ├── scripts/                 # Capture & verification scripts
+│   │   ├── capture_contexts.sh
+│   │   ├── capture_denials.sh
+│   │   └── verify_domains.sh
+│   ├── selinux/                 # Example audit output
+│   │   ├── contexts.before.txt
+│   │   ├── contexts.after.txt
+│   │   ├── denials.log
+│   │   └── domain.map
+│   └── upstream/                # Upstream diff reports (CI-generated)
+│
+└── .github/workflows/           # CI/CD automation
+    ├── upstream-sync.yml        # Upstream submodule tracking
+    └── build-and-release.yml    # APK build + module ZIP + GitHub Release
 ```
+
+---
+
+## CI/CD Pipeline
+
+### Upstream Sync (`upstream-sync.yml`)
+
+| | |
+|---|---|
+| **Trigger** | Manual dispatch or weekly (Monday 06:00 UTC) |
+| **Action** | Updates `upstream/system_shizuku/` submodule, syncs overlay files, generates diff |
+| **Output** | Commit with updated submodule ref + `audit/upstream/upstream_diff.txt` |
+
+### Build and Release (`build-and-release.yml`)
+
+| | |
+|---|---|
+| **Trigger** | Push to `main` (upstream/overlay/build changes) or manual dispatch |
+| **Action** | Detect changes → Build APK → Assemble Magisk ZIP → Create GitHub Release |
+| **Tag format** | `sui-lite-<upstream_commit_hash>` |
+| **Release body** | Verbatim upstream commit message + module metadata |
+
+Each release includes:
+
+| Artifact | Description |
+|----------|-------------|
+| `Sui-Lite-*.zip` | Flashable Magisk module |
+| `apk_hashes.txt` | SHA256 hashes of all APKs |
+| `rebuilt_apks.json` | Build metadata (JSON) |
+| `deployment_tree.txt` | Full module file tree |
+| `upstream_diff.txt` | Changes from upstream (if synced) |
+| `build_manifest.txt` | Build environment details |
+
+---
+
+## Building APKs
+
+Two build modes are supported:
+
+| Mode | Command | Signing | Binder Registration |
+|------|---------|---------|---------------------|
+| **AOSP tree** | `./build/build_apks.sh --aosp --deploy` | Platform key | ✅ Works |
+| **Standalone** | `./build/build_apks.sh --standalone --deploy` | Debug key | ❌ Structural only |
+
+```bash
+# Check build environment
+./build/env_check.sh
+
+# Build and deploy to overlay
+./build/build_apks.sh --standalone --deploy
+```
+
+> [!WARNING]
+> Debug-signed APKs **cannot** register Binder services because they lack
+> `android.uid.system`. The standalone build is for structural verification only.
+> For full functional testing, use the AOSP tree build with platform signing.
+
+For standalone builds, you need a framework stub for hidden API access:
+```bash
+adb pull /system/framework/framework.jar build/framework-stub.jar
+```
+
+See [`build/README.build.md`](build/README.build.md) for full documentation.
 
 ---
 
 ## Installation
 
-### 1. Prepare the module
+### From GitHub Releases (recommended)
+
+1. Download the latest `Sui-Lite-*.zip` from [Releases](https://github.com/zerofrip/Sui-Lite/releases)
+2. Flash via Magisk Manager → Modules → Install from storage
+3. Reboot
+
+### From source
 
 ```bash
-# Clone or download this repository
-git clone https://github.com/zerofrip/Sui-Lite.git
-```
-
-### 2. Provide the SystemShizuku APK
-
-The module **cannot compile Java source**. You must build the APK from the
-upstream AOSP source and place it in the overlay:
-
-```bash
-cp SystemShizuku.apk Sui-Lite/overlay/system/priv-app/SystemShizuku/
-```
-
-> [!WARNING]
-> The APK must be **platform-signed** (signed with the ROM's platform key).
-> An unsigned or debug-signed APK will fail to register Binder services
-> because it uses `android:sharedUserId="android.uid.system"`.
-
-### 3. Flash via Magisk
-
-```bash
-# Create a flashable zip
+git clone --recurse-submodules https://github.com/zerofrip/Sui-Lite.git
 cd Sui-Lite
-zip -r ../Sui-Lite.zip . -x '.git/*'
 
-# Flash via Magisk Manager or TWRP
-# Magisk Manager → Modules → Install from storage → Sui-Lite.zip
+# Option A: Use a pre-built platform-signed APK
+cp /path/to/SystemShizuku.apk overlay/system/priv-app/SystemShizuku/
+
+# Option B: Build from source (debug-signed)
+./build/build_apks.sh --standalone --deploy
+
+# Create flashable ZIP
+zip -r ../Sui-Lite.zip . -x '.git/*' 'upstream/system_shizuku/.git/*' 'build/out/*'
 ```
 
-### 4. Reboot
+### Required environment
 
-After reboot, the module will:
-- Overlay permission XMLs and init.rc into `/system/`
-- Verify overlay visibility
-- Capture SELinux contexts (before and after)
-- Check service registration status
-- Capture AVC denials
+| Component | Minimum Version |
+|-----------|----------------|
+| **Rooted Android device** | Android 11+ |
+| **Magisk** | v26+ |
+| **SELinux** | Enforcing (recommended) |
+
+> [!IMPORTANT]
+> The module is designed to operate under **SELinux Enforcing mode**.
+> AVC denials are expected and intentionally captured for analysis.
 
 ---
 
@@ -152,10 +201,7 @@ After reboot, the module will:
 
 All audit output is written to `/data/local/tmp/sui-lite/` on the device.
 
-### Automated collection (runs on boot)
-
-The `service.sh` script automatically invokes audit scripts on every boot.
-Data is available at:
+### Automated (runs on boot)
 
 ```
 /data/local/tmp/sui-lite/
@@ -164,12 +210,10 @@ Data is available at:
 ├── contexts.before.txt     # SELinux contexts before activation
 ├── contexts.after.txt      # SELinux contexts after activation
 ├── denials.log             # AVC denial capture
-└── domain.map              # Domain verification results
+└── domain.map              # Domain verification results (PASS/FAIL/SKIP)
 ```
 
-### Manual collection
-
-You can also run the scripts manually via ADB:
+### Manual
 
 ```bash
 # Capture SELinux file contexts
@@ -180,21 +224,8 @@ adb shell sh /data/adb/modules/sui-lite/audit/scripts/capture_denials.sh /data/l
 
 # Verify domains
 adb shell sh /data/adb/modules/sui-lite/audit/scripts/verify_domains.sh /data/local/tmp/sui-lite
-```
 
-### Live denial monitoring
-
-```bash
-# Watch denials in real time
-adb shell dmesg -w | grep -i 'avc.*denied'
-
-# Or via logcat
-adb shell logcat -b all | grep -i 'avc.*denied'
-```
-
-### Pull results to host
-
-```bash
+# Pull results
 adb pull /data/local/tmp/sui-lite/ ./audit-results/
 ```
 
@@ -204,70 +235,42 @@ adb pull /data/local/tmp/sui-lite/ ./audit-results/
 
 ### `contexts.before.txt` / `contexts.after.txt`
 
-Contains SELinux file contexts for all system_shizuku-relevant paths.
-Diff these to see what changed after module activation:
+SELinux file contexts for all system_shizuku-relevant paths.
+Diff to see what changed after module activation:
 
 ```bash
 diff contexts.before.txt contexts.after.txt
 ```
 
-**Expected:** Overlay files should appear with `u:object_r:system_file:s0`
-context after activation. Missing entries indicate overlay failure.
-
 ### `denials.log`
 
-Contains AVC denial messages filtered for `system_shizuku` / `shizuku`.
-
-**Expected under Enforcing mode:** Denials for the `system_shizuku` domain
-if no custom SELinux policy has been loaded. Common denials:
-
-```
-avc: denied { add } for service=shizuku scontext=u:r:system_shizuku:s0 ...
-avc: denied { find } for service=shizuku scontext=u:r:untrusted_app:s0 ...
-```
-
-**Action:** These denials document what policy rules are **required**.
-Use them to generate targeted `sepolicy.rule` entries or device-level
-policy patches. Do NOT suppress them.
+AVC denials filtered for `system_shizuku` / `shizuku`. These document
+exactly what policy rules are **required**. Use them to generate targeted
+`sepolicy.rule` entries — do NOT suppress them.
 
 ### `domain.map`
 
-Shows PASS/FAIL/SKIP results for each verification check:
-
+PASS/FAIL/SKIP results for each verification check:
 - **PASS** — runtime state matches upstream expectation
 - **FAIL** — mismatch detected (investigate)
-- **SKIP** — component not available (service not started, APK missing, etc.)
+- **SKIP** — component not available (service not started, APK missing)
 
 ---
 
-## SELinux Assumptions
+## SELinux Approach
 
-This module operates under these assumptions:
-
-1. **Enforcing mode is the default.** The module is designed to observe
-   behavior under real SELinux constraints.
-
-2. **No policy injection.** The module does NOT include a `sepolicy.rule`
-   file. All SELinux types (`system_shizuku`, `system_shizuku_service`,
-   `system_shizuku_data_file`, etc.) exist **only in the upstream policy
-   definitions** at `upstream/system_shizuku/sepolicy/`.
-
-3. **AVC denials are informational.** They tell you exactly what policy
-   rules the upstream service requires. The decision to add those rules
-   is yours.
-
-4. **Domain transitions require device-level policy.** The upstream
-   `init.system_shizuku.rc` specifies `seclabel u:r:system_shizuku:s0`,
-   which requires the device's SELinux policy to define the
-   `system_shizuku` type. Without it, the service will run in `init`
-   domain or fail to start.
+1. **Enforcing mode** is the default. The module observes real constraints.
+2. **No policy injection.** No `sepolicy.rule` file is included.
+3. **AVC denials are informational.** They tell you what rules upstream requires.
+4. **Domain transitions require device-level policy.** The upstream `init.rc`
+   specifies `seclabel u:r:system_shizuku:s0` — the device's SELinux policy
+   must define this type.
 
 ---
 
 ## Upstream Reference
 
-The `upstream/system_shizuku/` directory contains a complete, unmodified
-copy of the source repository. Key files for SELinux analysis:
+Key files in `upstream/system_shizuku/` for SELinux analysis:
 
 | File | Purpose |
 |------|---------|
@@ -286,4 +289,4 @@ See the upstream repository for full license text.
 
 All files in `upstream/system_shizuku/` are copyright their original authors.
 The Magisk integration layer (`module.prop`, `service.sh`, `post-fs-data.sh`,
-`audit/scripts/`) is released under the same license.
+`build/`, `audit/scripts/`, `.github/workflows/`) is released under the same license.
