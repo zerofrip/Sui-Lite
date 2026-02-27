@@ -278,6 +278,54 @@ Contains details about the custom Binder service (`sui_lite_binder`):
 
 ---
 
+## Debug-signed APK Verification Flow
+
+### Limitations
+Debug-signed APKs are useful for structural and flow verification but have a significant limitation: they **cannot register fully functional Binder services**. This is because they lack the `android.uid.system` shared UID, which is required by `ServiceManager` for privileged service registration.
+
+> [!IMPORTANT]
+> Full Binder functionality and registration of `shizuku` / `system_shizuku` services **require a platform-signed APK built from an AOSP tree**.
+
+### Verification Steps
+This flow confirms that the Magisk module's lifecycle, overlay mounting, and process launching are working as intended.
+
+1.  **Build in Debug Mode**
+    Compile the Sui-Lite module components with standalone/debug configurations:
+    ```bash
+    ./build/build_apks.sh --standalone --deploy
+    ./binder-service/build.sh
+    ```
+
+2.  **Install & Reboot**
+    Flash the generated ZIP via Magisk Manager and reboot the device.
+
+3.  **Monitor service.sh Execution**
+    `service.sh` runs automatically on boot. Check its execution flow:
+    ```bash
+    adb shell tail -f /data/local/tmp/sui-lite/service.log
+    ```
+    Look for:
+    - `init service 'shizuku': RUNNING`
+    - `VISIBLE: /system/priv-app/SystemShizuku context=...`
+    - `Launching Binder service...`
+
+4.  **Verify Process & Contexts**
+    Check if the `binder-service.jar` process is running and inspect its SELinux domain:
+    ```bash
+    adb shell pidof com.suilite.binder.BinderEntryPoint
+    adb shell cat /data/local/tmp/sui-lite/binder_contexts.txt
+    ```
+
+5.  **Audit SELinux Denials**
+    Even if registration fails, the audit logs will confirm the domain transition and the exact reason for the failure:
+    ```bash
+    adb shell grep -i "sui_lite" /data/local/tmp/sui-lite/denials.log
+    ```
+
+This flow ensures that the module infrastructure is verified and functional, serving as a baseline before deploying platform-signed components.
+
+---
+
 ## SELinux Approach
 
 1. **Enforcing mode** is the default. The module observes real constraints.
