@@ -218,7 +218,8 @@ All audit output is written to `/data/local/tmp/sui-lite/` on the device.
 ├── contexts.before.txt     # SELinux contexts before activation
 ├── contexts.after.txt      # SELinux contexts after activation
 ├── denials.log             # AVC denial capture
-└── domain.map              # Domain verification results (PASS/FAIL/SKIP)
+├── domain.map              # Domain verification results (PASS/FAIL/SKIP)
+└── binder_contexts.txt     # Binder registration & context audit
 ```
 
 ### Manual
@@ -232,6 +233,9 @@ adb shell sh /data/adb/modules/sui-lite/audit/scripts/capture_denials.sh /data/l
 
 # Verify domains
 adb shell sh /data/adb/modules/sui-lite/audit/scripts/verify_domains.sh /data/local/tmp/sui-lite
+
+# Audit Binder contexts
+adb shell sh /data/adb/modules/sui-lite/audit/scripts/capture_binder_contexts.sh /data/local/tmp/sui-lite
 
 # Pull results
 adb pull /data/local/tmp/sui-lite/ ./audit-results/
@@ -262,6 +266,15 @@ PASS/FAIL/SKIP results for each verification check:
 - **PASS** — runtime state matches upstream expectation
 - **FAIL** — mismatch detected (investigate)
 - **SKIP** — component not available (service not started, APK missing)
+
+### `binder_contexts.txt`
+
+Contains details about the custom Binder service (`sui_lite_binder`):
+- **Registration status**: Whether ServiceManager accepted the registration.
+- **Process identity**: PID, UID, GID, and SELinux domain of the process.
+- **Relevant denials**: AVC denials specifically filtered for Binder registration.
+
+**Expected behavior:** Registration is expected to **FAIL** under Enforcing mode without custom policy, but the process should remain alive for inspection.
 
 ---
 
